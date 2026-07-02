@@ -64,6 +64,17 @@ All container behaviour is controlled by environment variables, processed by [`m
 * **DRAWIO_VIEWER_URL**: Optional URL of a hosted viewer JS bundle, e.g. `https://drawio.example.com/js/viewer.min.js`.
 * **DRAWIO_LIGHTBOX_URL**: Optional lightbox URL, e.g. `https://drawio.example.com`.
 
+### Basic authentication
+
+Set both variables to require HTTP Basic authentication before opening draw.io:
+
+* **DRAWIO_BASIC_AUTH_USER**: Basic Auth username.
+* **DRAWIO_BASIC_AUTH_PASSWORD**: Basic Auth password.
+* **DRAWIO_BASIC_AUTH_REALM**: Optional Basic Auth realm name. Defaults to `draw.io`.
+* **DRAWIO_BASIC_AUTH_ROLE**: Optional Tomcat role name. Defaults to `drawio-user`.
+
+When Basic Auth is enabled, health checks or reverse proxies that call draw.io directly must send these credentials.
+
 ### Editor configuration
 
 * **DRAWIO_CONFIG**: JSON configuration object for the diagram editor — written verbatim into `window.DRAWIO_CONFIG`. See <https://www.drawio.com/doc/faq/configure-diagram-editor>. Must be valid JSON, not arbitrary JavaScript.

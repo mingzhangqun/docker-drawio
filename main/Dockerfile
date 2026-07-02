@@ -8,8 +8,18 @@ RUN apt-get update -y && \
         ant \
         git
 
+ARG GIT_HTTP_PROXY
 RUN cd /tmp && \
-    git clone --depth 1 https://github.com/jgraph/drawio.git && \
+    for i in 1 2 3 4 5; do \
+        if [ -n "$GIT_HTTP_PROXY" ]; then \
+            git -c http.version=HTTP/1.1 -c http.proxy="$GIT_HTTP_PROXY" -c https.proxy="$GIT_HTTP_PROXY" clone --depth 1 https://github.com/jgraph/drawio.git && break; \
+        else \
+            git -c http.version=HTTP/1.1 clone --depth 1 https://github.com/jgraph/drawio.git && break; \
+        fi; \
+        rm -rf /tmp/drawio; \
+        if [ "$i" = "5" ]; then exit 1; fi; \
+        sleep 10; \
+    done && \
     cd /tmp/drawio/etc/build/ && \
     ant war
 

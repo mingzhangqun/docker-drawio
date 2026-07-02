@@ -11,6 +11,59 @@ COUNTRY_CODE=${COUNTRY_CODE:-'FR'}
 KEYSTORE_PASS=${KEYSTORE_PASS:-'V3ry1nS3cur3P4ssw0rd'}
 KEY_PASS=${KEY_PASS:-$KEYSTORE_PASS}
 
+xml_escape_attr() {
+    local value="$1"
+    value=${value//&/&amp;}
+    value=${value//</&lt;}
+    value=${value//>/&gt;}
+    value=${value//\"/&quot;}
+    value=${value//\'/&apos;}
+    printf '%s' "$value"
+}
+
+if [[ -n "${DRAWIO_BASIC_AUTH_USER}" || -n "${DRAWIO_BASIC_AUTH_PASSWORD}" ]]; then
+    if [[ -z "${DRAWIO_BASIC_AUTH_USER}" || -z "${DRAWIO_BASIC_AUTH_PASSWORD}" ]]; then
+        echo "DRAWIO_BASIC_AUTH_USER and DRAWIO_BASIC_AUTH_PASSWORD must both be set to enable Basic Auth"
+        exit 1
+    fi
+
+    echo "Enabling Basic Auth"
+    AUTH_ROLE="${DRAWIO_BASIC_AUTH_ROLE:-drawio-user}"
+    AUTH_REALM="${DRAWIO_BASIC_AUTH_REALM:-draw.io}"
+    AUTH_USER_ESCAPED=$(xml_escape_attr "${DRAWIO_BASIC_AUTH_USER}")
+    AUTH_PASSWORD_ESCAPED=$(xml_escape_attr "${DRAWIO_BASIC_AUTH_PASSWORD}")
+    AUTH_ROLE_ESCAPED=$(xml_escape_attr "${AUTH_ROLE}")
+    AUTH_REALM_ESCAPED=$(xml_escape_attr "${AUTH_REALM}")
+
+    if ! grep -Fq "rolename=\"${AUTH_ROLE_ESCAPED}\"" "$CATALINA_HOME/conf/tomcat-users.xml"; then
+        sed -i "/<\/tomcat-users>/i\\
+  <role rolename=\"${AUTH_ROLE_ESCAPED}\"/>\\
+  <user username=\"${AUTH_USER_ESCAPED}\" password=\"${AUTH_PASSWORD_ESCAPED}\" roles=\"${AUTH_ROLE_ESCAPED}\"/>" \
+            "$CATALINA_HOME/conf/tomcat-users.xml"
+    fi
+
+    if ! grep -Fq "<web-resource-name>draw.io Basic Auth</web-resource-name>" "$CATALINA_HOME/webapps/draw/WEB-INF/web.xml"; then
+        sed -i "/<\/web-app>/i\\
+  <security-constraint>\\
+    <web-resource-collection>\\
+      <web-resource-name>draw.io Basic Auth</web-resource-name>\\
+      <url-pattern>/*</url-pattern>\\
+    </web-resource-collection>\\
+    <auth-constraint>\\
+      <role-name>${AUTH_ROLE_ESCAPED}</role-name>\\
+    </auth-constraint>\\
+  </security-constraint>\\
+  <login-config>\\
+    <auth-method>BASIC</auth-method>\\
+    <realm-name>${AUTH_REALM_ESCAPED}</realm-name>\\
+  </login-config>\\
+  <security-role>\\
+    <role-name>${AUTH_ROLE_ESCAPED}</role-name>\\
+  </security-role>" \
+            "$CATALINA_HOME/webapps/draw/WEB-INF/web.xml"
+    fi
+fi
+
 echo "Init PreConfig.js"
 #Add CSP to prevent calls to draw.io
 echo "(function() {" > $CATALINA_HOME/webapps/draw/js/PreConfig.js
@@ -146,7 +199,6 @@ fi
 
 #Treat this domain as a draw.io domain
 echo "App.prototype.isDriveDomain = function() { return true; }" >> $CATALINA_HOME/webapps/draw/js/PostConfig.js
-
 cat $CATALINA_HOME/webapps/draw/js/PostConfig.js
 
 if ! [ -f $CATALINA_HOME/.keystore ] && [ "$LETS_ENCRYPT_ENABLED" == "true" ]; then
