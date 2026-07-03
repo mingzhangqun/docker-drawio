@@ -75,6 +75,29 @@ Set both variables to require HTTP Basic authentication before opening draw.io:
 
 When Basic Auth is enabled, health checks or reverse proxies that call draw.io directly must send these credentials.
 
+### Docker file storage
+
+The browser-based PC open/save flow remains available by default. To also open and save diagrams in a Docker-mounted directory, set:
+
+* **DRAWIO_DOCKER_FILE_DIR**: Enables the Docker file panel and restricts server-side file access to this directory, e.g. `/data`.
+* **DRAWIO_DOCKER_FILE_MAX_BYTES**: Optional maximum read/save size in bytes. Defaults to `26214400` (25 MiB).
+
+Example:
+
+```yaml
+services:
+  drawio:
+    image: jgraph/drawio
+    ports:
+      - 8080:8080
+    environment:
+      DRAWIO_DOCKER_FILE_DIR: /data
+    volumes:
+      - ./drawio-files:/data
+```
+
+With this enabled, draw.io keeps the normal PC upload/download options and adds a **Docker files** button for the mounted folder. The container user must be able to read and write the mounted directory.
+
 ### Editor configuration
 
 * **DRAWIO_CONFIG**: JSON configuration object for the diagram editor — written verbatim into `window.DRAWIO_CONFIG`. See <https://www.drawio.com/doc/faq/configure-diagram-editor>. Must be valid JSON, not arbitrary JavaScript.

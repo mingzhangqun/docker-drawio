@@ -44,10 +44,14 @@ RUN apt-get update -y && \
     rm -r /var/lib/apt/lists/*
 
 COPY --from=build /tmp/drawio/build/draw.war /tmp
+COPY docker-storage.jsp /tmp/docker-storage.jsp
+COPY docker-storage.js /tmp/docker-storage.js
 
 # Extract draw.io war & Update server.xml to set Draw.io webapp to root
 RUN mkdir -p $CATALINA_HOME/webapps/draw && \
     unzip /tmp/draw.war -d $CATALINA_HOME/webapps/draw && \
+    mv /tmp/docker-storage.jsp $CATALINA_HOME/webapps/draw/docker-storage.jsp && \
+    mv /tmp/docker-storage.js $CATALINA_HOME/webapps/draw/js/docker-storage.js && \
     rm -rf /tmp/draw.war /tmp/drawio && \
     cd $CATALINA_HOME && \
     xmlstarlet ed \

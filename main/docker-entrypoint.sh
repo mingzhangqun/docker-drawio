@@ -64,6 +64,11 @@ if [[ -n "${DRAWIO_BASIC_AUTH_USER}" || -n "${DRAWIO_BASIC_AUTH_PASSWORD}" ]]; t
     fi
 fi
 
+if [[ -n "${DRAWIO_DOCKER_FILE_DIR}" ]]; then
+    echo "Enabling Docker file storage at ${DRAWIO_DOCKER_FILE_DIR}"
+    mkdir -p "${DRAWIO_DOCKER_FILE_DIR}"
+fi
+
 echo "Init PreConfig.js"
 #Add CSP to prevent calls to draw.io
 echo "(function() {" > $CATALINA_HOME/webapps/draw/js/PreConfig.js
@@ -127,6 +132,11 @@ echo "window.DRAWIO_LIGHTBOX_URL = '${DRAWIO_LIGHTBOX_URL}';" >> $CATALINA_HOME/
 echo "window.DRAW_MATH_URL = 'math4/es5';" >> $CATALINA_HOME/webapps/draw/js/PreConfig.js
 #Custom draw.io configurations. For more details, https://www.drawio.com/doc/faq/configure-diagram-editor
 echo "window.DRAWIO_CONFIG = ${DRAWIO_CONFIG:-null};" >> $CATALINA_HOME/webapps/draw/js/PreConfig.js
+if [[ -n "${DRAWIO_DOCKER_FILE_DIR}" ]]; then
+    echo "window.DRAWIO_DOCKER_FILE_STORAGE_ENABLED = true;" >> $CATALINA_HOME/webapps/draw/js/PreConfig.js
+else
+    echo "window.DRAWIO_DOCKER_FILE_STORAGE_ENABLED = false;" >> $CATALINA_HOME/webapps/draw/js/PreConfig.js
+fi
 #Real-time configuration
 echo "urlParams['sync'] = 'manual'; //Disable Real-Time" >> $CATALINA_HOME/webapps/draw/js/PreConfig.js
 
@@ -199,6 +209,10 @@ fi
 
 #Treat this domain as a draw.io domain
 echo "App.prototype.isDriveDomain = function() { return true; }" >> $CATALINA_HOME/webapps/draw/js/PostConfig.js
+if [[ -n "${DRAWIO_DOCKER_FILE_DIR}" ]]; then
+    echo "mxscript('js/docker-storage.js');" >> $CATALINA_HOME/webapps/draw/js/PostConfig.js
+fi
+
 cat $CATALINA_HOME/webapps/draw/js/PostConfig.js
 
 if ! [ -f $CATALINA_HOME/.keystore ] && [ "$LETS_ENCRYPT_ENABLED" == "true" ]; then
