@@ -8,6 +8,18 @@
     var api = 'docker-storage.jsp';
     var installed = false;
 
+    function dirname(path)
+    {
+        var index = (path || '').lastIndexOf('/');
+        return index >= 0 ? path.substring(0, index) : '';
+    }
+
+    function basename(path)
+    {
+        var parts = (path || '').split('/');
+        return parts[parts.length - 1] || 'diagram.drawio';
+    }
+
     function request(action, path, options)
     {
         options = options || {};
@@ -47,6 +59,104 @@
         }
 
         return dir ? dir.replace(/\/+$/, '') + '/' + value : value;
+    }
+
+    function fileExists(path)
+    {
+        return request('list', dirname(path)).then(function(data)
+        {
+            var name = basename(path);
+            var items = data.items || [];
+
+            for (var i = 0; i < items.length; i++)
+            {
+                if (!items[i].directory && items[i].name === name)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }, function()
+        {
+            return false;
+        });
+    }
+
+    function setDockerPath(ui, path)
+    {
+        ui._dockerStoragePath = path;
+    }
+
+    function saveDockerFile(ui, path, options)
+    {
+        options = options || {};
+
+        if (!path)
+        {
+            ui.alert('Enter a file name or path.');
+            return;
+        }
+
+        if (!/(\.drawio|\.xml)$/i.test(path))
+        {
+            path += '.drawio';
+        }
+
+        var doSave = function()
+        {
+            request('save', path, {
+                method: 'POST',
+                headers: {'Content-Type': 'text/xml;charset=UTF-8'},
+                body: ui.getFileData(true)
+            }).then(function()
+            {
+                setDockerPath(ui, path);
+                ui.editor.modified = false;
+                ui.updateStatus(function()
+                {
+                    ui.editor.setStatus('Saved to Docker: ' + path);
+                });
+
+                if (options.success != null)
+                {
+                    options.success();
+                }
+
+                if (options.afterSave != null)
+                {
+                    options.afterSave(path);
+                }
+            }).catch(function(err)
+            {
+                ui.handleError(err);
+            });
+        };
+
+        if (options.confirmOverwrite)
+        {
+            fileExists(path).then(function(exists)
+            {
+                if (exists)
+                {
+                    var message = (typeof mxResources !== 'undefined') ?
+                        mxResources.get('replaceIt', [path]) : 'Replace ' + path + '?';
+
+                    ui.confirm(message, doSave);
+                }
+                else
+                {
+                    doSave();
+                }
+            }).catch(function(err)
+            {
+                ui.handleError(err);
+            });
+        }
+        else
+        {
+            doSave();
+        }
     }
 
     function install(ui)
@@ -134,12 +244,6 @@
                 return node;
             }
 
-            function basename(path)
-            {
-                var parts = (path || '').split('/');
-                return parts[parts.length - 1] || 'diagram.drawio';
-            }
-
             function render(items)
             {
                 list.innerHTML = '';
@@ -218,40 +322,25 @@
                 {
                     ui.hideDialog();
                     ui.openLocalFile(xml, basename(path), true);
+                    setDockerPath(ui, path);
+                    ui.updateStatus(function()
+                    {
+                        ui.editor.setStatus('Opened from Docker: ' + path);
+                    });
                 }).catch(function(err)
                 {
                     ui.handleError(err);
                 });
             }
 
-            function saveDockerFile(path)
+            function saveSelectedDockerFile(path)
             {
-                if (!path)
-                {
-                    ui.alert('Enter a file name or path.');
-                    return;
-                }
-
-                if (!/(\.drawio|\.xml)$/i.test(path))
-                {
-                    path += '.drawio';
-                }
-
-                request('save', path, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'text/xml;charset=UTF-8'},
-                    body: ui.getFileData(true)
-                }).then(function()
-                {
-                    ui.editor.modified = false;
-                    ui.updateStatus(function()
+                saveDockerFile(ui, path, {
+                    confirmOverwrite: true,
+                    afterSave: function()
                     {
-                        ui.editor.setStatus('Saved to Docker: ' + path);
-                    });
-                    load(currentPath);
-                }).catch(function(err)
-                {
-                    ui.handleError(err);
+                        load(currentPath);
+                    }
                 });
             }
 
@@ -300,7 +389,7 @@
 
             saveButton.addEventListener('click', function()
             {
-                saveDockerFile(normalizePath(currentPath, nameInput.value));
+                saveSelectedDockerFile(normalizePath(currentPath, nameInput.value));
             });
 
             downloadButton.addEventListener('click', function()
@@ -323,4 +412,24 @@
         editorUiInit.apply(this, arguments);
         install(this);
     };
+
+    if (typeof App !== 'undefined' && App.prototype.saveFile != null)
+    {
+        var appSaveFile = App.prototype.saveFile;
+
+        App.prototype.saveFile = function(forceDialog, success)
+        {
+            if (!forceDialog && this._dockerStoragePath)
+            {
+                saveDockerFile(this, this._dockerStoragePath, {
+                    confirmOverwrite: false,
+                    success: success
+                });
+            }
+            else
+            {
+                appSaveFile.apply(this, arguments);
+            }
+        };
+    }
 })();
