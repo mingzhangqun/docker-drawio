@@ -210,7 +210,11 @@ fi
 #Treat this domain as a draw.io domain
 echo "App.prototype.isDriveDomain = function() { return true; }" >> $CATALINA_HOME/webapps/draw/js/PostConfig.js
 if [[ -n "${DRAWIO_DOCKER_FILE_DIR}" ]]; then
-    echo "mxscript('js/docker-storage.js');" >> $CATALINA_HOME/webapps/draw/js/PostConfig.js
+    # Cache-bust the injected script so browsers refetch it after the image
+    # is rebuilt with a new docker-storage.js. Use a short content hash so the
+    # URL changes only when the file actually changes.
+    DOCKER_STORAGE_REV=$(sha1sum "$CATALINA_HOME/webapps/draw/js/docker-storage.js" | cut -c1-8)
+    echo "mxscript('js/docker-storage.js?v=${DOCKER_STORAGE_REV}');" >> $CATALINA_HOME/webapps/draw/js/PostConfig.js
 fi
 
 cat $CATALINA_HOME/webapps/draw/js/PostConfig.js
