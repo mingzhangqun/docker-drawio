@@ -89,6 +89,17 @@ private File resolvePath(File base, String relPath) throws IOException
 
     return target;
 }
+
+private String mimeType(String name)
+{
+    String lower = name == null ? "" : name.toLowerCase(Locale.ENGLISH);
+
+    if (lower.endsWith(".png")) return "image/png";
+    if (lower.endsWith(".svg")) return "image/svg+xml";
+    if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+
+    return "text/xml";
+}
 %>
 <%
 String baseDirValue = System.getenv("DRAWIO_DOCKER_FILE_DIR");
@@ -192,8 +203,26 @@ try
             return;
         }
 
-        response.setContentType("text/xml;charset=UTF-8");
-        out.print(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
+        byte[] bytes = Files.readAllBytes(file.toPath());
+
+        if ("base64".equals(request.getParameter("encoding")))
+        {
+            response.setContentType("text/plain;charset=UTF-8");
+            out.print(Base64.getEncoder().encodeToString(bytes));
+            return;
+        }
+
+        String contentType = mimeType(file.getName());
+        response.setContentType(contentType + (contentType.startsWith("text/") ? ";charset=UTF-8" : ""));
+
+        if (contentType.startsWith("text/"))
+        {
+            out.print(new String(bytes, StandardCharsets.UTF_8));
+        }
+        else
+        {
+            response.getOutputStream().write(bytes);
+        }
     }
     else if ("POST".equals(method) && "save".equals(action))
     {
@@ -206,9 +235,38 @@ try
         }
 
         String data = readBody(request, maxBytes);
-        Files.write(file.toPath(), data.getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        byte[] bytes;
+
+        if ("base64".equals(request.getParameter("encoding")))
+        {
+            bytes = Base64.getDecoder().decode(data.trim());
+        }
+        else
+        {
+            bytes = data.getBytes(StandardCharsets.UTF_8);
+        }
+
+        Files.write(file.toPath(), bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         response.setContentType("application/json;charset=UTF-8");
         out.print("{\"ok\":true,\"path\":\"" + json(baseDir.toPath().relativize(file.toPath()).toString().replace(File.separatorChar, '/')) + "\"}");
+    }
+    else if ("POST".equals(method) && "delete".equals(action))
+    {
+        File file = resolvePath(baseDir, relPath);
+
+        if (!file.exists() || !file.isFile())
+        {
+            response.sendError(404, "File not found");
+            return;
+        }
+
+        if (!file.delete())
+        {
+            throw new IOException("Unable to delete file");
+        }
+
+        response.setContentType("application/json;charset=UTF-8");
+        out.print("{\"ok\":true}");
     }
     else
     {

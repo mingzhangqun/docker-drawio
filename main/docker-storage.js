@@ -8,6 +8,8 @@
 
     var api = 'docker-storage.jsp';
     var installed = false;
+    var dockerHashPrefix = 'DX';
+    var dockerMode = 'docker';
 
     function dirname(path)
     {
@@ -28,7 +30,50 @@
             return path;
         }
 
-        return /(\.drawio|\.xml)$/i.test(path || '') ? path : path + '.drawio';
+        return /\.[^\/.]+$/i.test(basename(path)) ? path : path + '.drawio';
+    }
+
+    function isDiagramPath(path)
+    {
+        return /(\.drawio|\.xml)$/i.test(path || '');
+    }
+
+    function isDockerOpenablePath(path)
+    {
+        return /(\.drawio|\.xml|\.png)$/i.test(path || '');
+    }
+
+    function getExtension(path)
+    {
+        var name = basename(path);
+        var index = name.lastIndexOf('.');
+        return index >= 0 ? name.substring(index + 1).toLowerCase() : '';
+    }
+
+    function getMimeType(path)
+    {
+        var ext = getExtension(path);
+
+        if (ext === 'png')
+        {
+            return 'image/png';
+        }
+        else if (ext === 'svg')
+        {
+            return 'image/svg+xml';
+        }
+        else if (ext === 'html' || ext === 'htm')
+        {
+            return 'text/html';
+        }
+
+        return 'text/xml';
+    }
+
+    function getDataForPath(ui, path)
+    {
+        return ui.getFileData(/(\.xml)$/i.test(path) || path.indexOf('.') < 0 ||
+            /(\.drawio)$/i.test(path), /(\.svg)$/i.test(path), /(\.html)$/i.test(path));
     }
 
     function request(action, path, options)
@@ -36,6 +81,15 @@
         options = options || {};
         var url = api + '?action=' + encodeURIComponent(action) +
             '&path=' + encodeURIComponent(path || '');
+
+        if (options.params != null)
+        {
+            for (var key in options.params)
+            {
+                url += '&' + encodeURIComponent(key) + '=' +
+                    encodeURIComponent(options.params[key]);
+            }
+        }
 
         return fetch(url, {
             method: options.method || 'GET',
@@ -53,6 +107,37 @@
             }
 
             return options.text ? resp.text() : resp.json();
+        });
+    }
+
+    function saveBase64ToDocker(ui, path, data, success, error)
+    {
+        request('save', path, {
+            method: 'POST',
+            headers: {'Content-Type': 'text/plain;charset=UTF-8'},
+            params: {encoding: 'base64'},
+            body: data
+        }).then(function()
+        {
+            if (success != null)
+            {
+                success();
+            }
+
+            ui.updateStatus(function()
+            {
+                ui.editor.setStatus('Saved to Docker Files: ' + path);
+            });
+        }).catch(function(err)
+        {
+            if (error != null)
+            {
+                error(err);
+            }
+            else
+            {
+                ui.handleError(err);
+            }
         });
     }
 
@@ -115,7 +200,7 @@
 
     DockerFile.prototype.getMode = function()
     {
-        return 'docker';
+        return dockerMode;
     };
 
     DockerFile.prototype.getTitle = function()
@@ -125,7 +210,7 @@
 
     DockerFile.prototype.getHash = function()
     {
-        return 'D' + encodeURIComponent(this.path);
+        return dockerHashPrefix + encodeURIComponent(this.path);
     };
 
     DockerFile.prototype.getDescriptor = function()
@@ -224,6 +309,49 @@
         path = ensureExtension(path || this.path);
         this.updateFileData();
 
+        if (this.savingFile)
+        {
+            return;
+        }
+
+        this.savingFileTime = new Date();
+        this.savingFile = true;
+
+        var errorWrapper = mxUtils.bind(this, function(err)
+        {
+            this.savingFile = false;
+
+            if (error != null)
+            {
+                error(err);
+            }
+            else
+            {
+                this.ui.handleError(err);
+            }
+        });
+
+        if (/(\.png)$/i.test(path))
+        {
+            var pngDesc = this.getDescriptor();
+            var pngData = this.getData();
+
+            this.setShadowModified(false);
+
+            savePngToDocker(this.ui, path, mxUtils.bind(this, function()
+            {
+                this.path = path;
+                this.title = basename(path);
+                this.setModified(this.getShadowModified());
+                this.savingFile = false;
+                this.setDescriptor(this.getEtag(pngData));
+                this.contentChanged();
+                this.fileSaved(pngData, pngDesc, success, error);
+            }), errorWrapper, true);
+
+            return;
+        }
+
         var desc = this.getDescriptor();
         var data = this.getData();
 
@@ -238,11 +366,153 @@
             this.path = path;
             this.title = basename(path);
             this.setModified(this.getShadowModified());
+            this.savingFile = false;
             this.setDescriptor(this.getEtag(data));
             this.contentChanged();
             this.fileSaved(data, desc, success, error);
-        })).catch(error);
+        })).catch(errorWrapper);
     };
+
+    function saveRawToDocker(ui, path, data, success)
+    {
+        var fn = function()
+        {
+            request('save', path, {
+                method: 'POST',
+                headers: {'Content-Type': 'text/xml;charset=UTF-8'},
+                body: data
+            }).then(function()
+            {
+                if (success != null)
+                {
+                    success();
+                }
+
+                ui.updateStatus(function()
+                {
+                    ui.editor.setStatus('Saved to Docker Files: ' + path);
+                });
+            }).catch(function(err)
+            {
+                ui.handleError(err);
+            });
+        };
+
+        fileExists(path).then(function(exists)
+        {
+            if (exists)
+            {
+                ui.confirm(mxResources.get('replaceIt', [path]), fn);
+            }
+            else
+            {
+                fn();
+            }
+        }).catch(function(err)
+        {
+            ui.handleError(err);
+        });
+    }
+
+    function savePngToDocker(ui, path, success, error, skipOverwriteConfirm)
+    {
+        var fn = function()
+        {
+            var spinning = false;
+
+            try
+            {
+                spinning = ui.spinner.spin(document.body, mxResources.get('exporting'));
+
+                ui.editor.exportToCanvas(function(canvas)
+                {
+                    if (spinning)
+                    {
+                        ui.spinner.stop();
+                    }
+
+                    try
+                    {
+                        var data = ui.createImageDataUri(canvas,
+                            ui.getFileData(true), 'png');
+                        saveBase64ToDocker(ui, path,
+                            data.substring(data.lastIndexOf(',') + 1),
+                            success, error);
+                    }
+                    catch (err)
+                    {
+                        if (error != null)
+                        {
+                            error(err);
+                        }
+                        else
+                        {
+                            ui.handleError(err);
+                        }
+                    }
+                }, null, null, null, function(err)
+                {
+                    if (spinning)
+                    {
+                        ui.spinner.stop();
+                    }
+
+                    if (error != null)
+                    {
+                        error(err);
+                    }
+                    else
+                    {
+                        ui.handleError(err);
+                    }
+                }, null, ui.editor.graph.isSelectionEmpty(), 1);
+            }
+            catch (err)
+            {
+                if (spinning)
+                {
+                    ui.spinner.stop();
+                }
+
+                if (error != null)
+                {
+                    error(err);
+                }
+                else
+                {
+                    ui.handleError(err);
+                }
+            }
+        };
+
+        if (skipOverwriteConfirm)
+        {
+            fn();
+            return;
+        }
+
+        fileExists(path).then(function(exists)
+        {
+            if (exists)
+            {
+                ui.confirm(mxResources.get('replaceIt', [path]), fn);
+            }
+            else
+            {
+                fn();
+            }
+        }).catch(function(err)
+        {
+            if (error != null)
+            {
+                error(err);
+            }
+            else
+            {
+                ui.handleError(err);
+            }
+        });
+    }
 
     function saveCurrentToDocker(ui, path, success)
     {
@@ -255,7 +525,21 @@
         path = ensureExtension(path);
 
         var file = ui.getCurrentFile();
-        var data = ui.getFileData(true);
+
+        if (/(\.png)$/i.test(path))
+        {
+            savePngToDocker(ui, path, success);
+            return;
+        }
+
+        var data = getDataForPath(ui, path);
+
+        if (!isDiagramPath(path))
+        {
+            saveRawToDocker(ui, path, data, success);
+            return;
+        }
+
         var dockerFile = file instanceof DockerFile ? file : new DockerFile(ui, data, path);
 
         dockerFile.setData(data);
@@ -272,7 +556,7 @@
 
             ui.updateStatus(function()
             {
-                ui.editor.setStatus('Saved to Docker Server: ' + path);
+                ui.editor.setStatus('Saved to Docker Files: ' + path);
             });
         }, function(err)
         {
@@ -280,7 +564,59 @@
         }, true);
     }
 
-    function openDockerPath(ui, path)
+    function loadDockerFile(ui, data, path, success)
+    {
+        var currentFile = ui.getCurrentFile();
+        var load = function()
+        {
+            var file = new DockerFile(ui, data, path);
+
+            ui.hideDialog();
+            ui.fileLoaded(file);
+            addDockerRecent(ui, file);
+
+            if (success != null)
+            {
+                success();
+            }
+
+            ui.updateStatus(function()
+            {
+                ui.editor.setStatus('Opened from Docker Files: ' + path);
+            });
+        };
+
+        if (currentFile != null && currentFile.isModified())
+        {
+            ui.confirm(mxResources.get('allChangesLost'), null, load,
+                mxResources.get('cancel'), mxResources.get('discardChanges'));
+        }
+        else
+        {
+            load();
+        }
+    }
+
+    function addDockerRecent(ui, file)
+    {
+        try
+        {
+            if (ui.addRecent != null)
+            {
+                ui.addRecent({
+                    id: file.getHash(),
+                    title: file.getTitle(),
+                    mode: file.getMode()
+                });
+            }
+        }
+        catch (e)
+        {
+            // ignore
+        }
+    }
+
+    function openDockerPath(ui, path, success)
     {
         if (!path)
         {
@@ -290,28 +626,41 @@
 
         path = ensureExtension(path);
 
+        if (/(\.png)$/i.test(path))
+        {
+            request('read', path, {
+                text: true,
+                params: {encoding: 'base64'}
+            }).then(function(data)
+            {
+                var xml = ui.extractGraphModelFromPng('data:image/png;base64,' + data);
+
+                if (xml != null && xml.length > 0)
+                {
+                    loadDockerFile(ui, xml, path, success);
+                }
+                else
+                {
+                    ui.handleError({message: mxResources.get('notADiagramFile')},
+                        mxResources.get('errorLoadingFile'));
+                }
+            }).catch(function(err)
+            {
+                ui.handleError(err);
+            });
+
+            return;
+        }
+        else if (!isDiagramPath(path))
+        {
+            ui.handleError({message: mxResources.get('notADiagramFile')},
+                mxResources.get('errorLoadingFile'));
+            return;
+        }
+
         request('read', path, {text: true}).then(function(xml)
         {
-            var currentFile = ui.getCurrentFile();
-            var load = function()
-            {
-                ui.hideDialog();
-                ui.fileLoaded(new DockerFile(ui, xml, path));
-                ui.updateStatus(function()
-                {
-                    ui.editor.setStatus('Opened from Docker Server: ' + path);
-                });
-            };
-
-            if (currentFile != null && currentFile.isModified())
-            {
-                ui.confirm(mxResources.get('allChangesLost'), null, load,
-                    mxResources.get('cancel'), mxResources.get('discardChanges'));
-            }
-            else
-            {
-                load();
-            }
+            loadDockerFile(ui, xml, path, success);
         }).catch(function(err)
         {
             ui.handleError(err);
@@ -326,12 +675,49 @@
             return;
         }
 
-        request('read', ensureExtension(path), {text: true}).then(function(xml)
+        path = ensureExtension(path);
+
+        if (!isDiagramPath(path))
         {
-            ui.saveLocalFile(xml, basename(path), 'text/xml', false, 'xml');
+            window.open(api + '?action=read&path=' + encodeURIComponent(path), '_blank');
+            return;
+        }
+
+        request('read', path, {text: true}).then(function(xml)
+        {
+            ui.saveLocalFile(xml, basename(path), getMimeType(path), false,
+                getExtension(path) || 'xml');
         }).catch(function(err)
         {
             ui.handleError(err);
+        });
+    }
+
+    function deleteDockerPath(ui, item, success)
+    {
+        if (item == null || item.directory)
+        {
+            ui.alert('Select a Docker file first.');
+            return;
+        }
+
+        ui.confirm('Delete "' + item.path + '"?', function()
+        {
+            request('delete', item.path, {method: 'POST'}).then(function()
+            {
+                if (success != null)
+                {
+                    success();
+                }
+
+                ui.updateStatus(function()
+                {
+                    ui.editor.setStatus('Deleted from Docker Files: ' + item.path);
+                });
+            }).catch(function(err)
+            {
+                ui.handleError(err);
+            });
         });
     }
 
@@ -341,20 +727,6 @@
         var selected = null;
         var panel = document.createElement('div');
         panel.className = 'dxDockerPanel';
-
-        var bar = document.createElement('div');
-        bar.className = 'dxDockerBar';
-
-        var pathInput = document.createElement('input');
-        pathInput.className = 'dxDockerPath';
-        pathInput.setAttribute('placeholder', 'folder path');
-        bar.appendChild(pathInput);
-
-        var upButton = buttonNode('Up');
-        var refreshButton = buttonNode('Refresh');
-        bar.appendChild(upButton);
-        bar.appendChild(refreshButton);
-        panel.appendChild(bar);
 
         var list = document.createElement('div');
         list.className = 'dxDockerList';
@@ -368,11 +740,11 @@
         nameInput.setAttribute('placeholder', 'diagram.drawio');
         footer.appendChild(nameInput);
 
-        var openButton = buttonNode('Open', mode === 'open');
         var saveButton = buttonNode('Save', mode === 'save');
+        var deleteButton = buttonNode('Delete');
         var downloadButton = buttonNode('Download');
-        footer.appendChild(openButton);
         footer.appendChild(saveButton);
+        footer.appendChild(deleteButton);
         footer.appendChild(downloadButton);
         panel.appendChild(footer);
 
@@ -447,13 +819,11 @@
         function load(path)
         {
             currentPath = path || '';
-            pathInput.value = currentPath;
             list.innerHTML = '<div class="dxDockerRow dxDockerMuted">Loading...</div>';
 
             request('list', currentPath).then(function(data)
             {
                 currentPath = data.path || '';
-                pathInput.value = currentPath;
                 render(data.items || []);
             }).catch(function(err)
             {
@@ -461,37 +831,11 @@
             });
         }
 
-        pathInput.addEventListener('keydown', function(evt)
-        {
-            if (evt.key === 'Enter')
-            {
-                load(pathInput.value);
-            }
-        });
-
-        upButton.addEventListener('click', function()
-        {
-            var parts = currentPath.split('/').filter(Boolean);
-            parts.pop();
-            load(parts.join('/'));
-        });
-
-        refreshButton.addEventListener('click', function()
-        {
-            load(pathInput.value);
-        });
-
-        openButton.addEventListener('click', function()
-        {
-            var path = selected && !selected.directory ? selected.path : nameInput.value;
-            openDockerPath(ui, path);
-        });
-
         saveButton.addEventListener('click', function()
         {
             saveCurrentToDocker(ui, normalizePath(currentPath, nameInput.value), function()
             {
-                load(currentPath);
+                ui.hideDialog();
             });
         });
 
@@ -499,6 +843,15 @@
         {
             var path = selected && !selected.directory ? selected.path : nameInput.value;
             downloadDockerPath(ui, path);
+        });
+
+        deleteButton.addEventListener('click', function()
+        {
+            deleteDockerPath(ui, selected, function()
+            {
+                nameInput.value = '';
+                load(currentPath);
+            });
         });
 
         var currentFile = ui.getCurrentFile();
@@ -527,18 +880,26 @@
         }
 
         var OriginalSaveDialog = SaveDialog;
+        var DOCKER_VALUE = 'docker';
+        var DOCKER_LABEL = 'Docker Files';
 
         SaveDialog = function(editorUi, title, saveFn, disabledModes, data, mimeType,
             base64Encoded, defaultMode, folderPickerMode, enabledModes, saveBtnLabel)
         {
             OriginalSaveDialog.apply(this, arguments);
 
+            // Only patch the normal Save As dialog; image export and folder
+            // picker modes use a different layout.
             if (mimeType != null || folderPickerMode != null || this.container == null)
             {
                 return;
             }
 
-            var storageSelect = this.container.querySelector('select');
+            // The "Where:" storage select is the LAST <select> in the dialog.
+            // When saving a diagram, a "Type:" (format) select precedes it, so
+            // querySelector('select') would wrongly target the Type select.
+            var selects = this.container.querySelectorAll('select');
+            var storageSelect = (selects.length > 0) ? selects[selects.length - 1] : null;
             var input = this.container.querySelector('input[type="text"]');
             var saveBtn = this.container.querySelector('.gePrimaryBtn');
 
@@ -547,26 +908,45 @@
                 return;
             }
 
-            var option = document.createElement('option');
-            option.setAttribute('value', 'docker');
-            option.setAttribute('title', 'Docker Server');
-            mxUtils.write(option, 'Docker Server');
-            storageSelect.appendChild(option);
-
-            if (SaveDialog.lastValue == 'docker')
+            function ensureDockerOption()
             {
-                storageSelect.value = 'docker';
-                storageSelect.dispatchEvent(new Event('change'));
+                var option = storageSelect.querySelector('option[value="' + DOCKER_VALUE + '"]');
+
+                if (option == null)
+                {
+                    option = document.createElement('option');
+                    option.setAttribute('value', DOCKER_VALUE);
+                    option.setAttribute('title', DOCKER_LABEL);
+                    mxUtils.write(option, DOCKER_LABEL);
+                }
+
+                if (option !== storageSelect.firstChild)
+                {
+                    storageSelect.insertBefore(option, storageSelect.firstChild);
+                }
             }
+
+            ensureDockerOption();
+
+            // drawio wipes storageSelect.innerHTML on reset / pick-folder and
+            // rebuilds the option list, removing our entry; re-add it then.
+            var observer = new MutationObserver(function()
+            {
+                ensureDockerOption();
+            });
+            observer.observe(storageSelect, {childList: true});
+
+            storageSelect.value = DOCKER_VALUE;
+            storageSelect.dispatchEvent(new Event('change'));
 
             saveBtn.addEventListener('click', function(evt)
             {
-                if (storageSelect.value == 'docker')
+                if (storageSelect.value == DOCKER_VALUE)
                 {
                     evt.preventDefault();
                     evt.stopImmediatePropagation();
 
-                    SaveDialog.lastValue = 'docker';
+                    SaveDialog.lastValue = DOCKER_VALUE;
                     editorUi.hideDialog();
                     showDockerDialog(editorUi, 'save', input.value);
                 }
@@ -578,7 +958,86 @@
         SaveDialog._dockerStoragePatched = true;
     }
 
-    function patchMenu(ui, name, addItems)
+    function patchLoadFile()
+    {
+        if (typeof App === 'undefined' || App.prototype.loadFile == null ||
+            App.prototype.loadFile._dockerStoragePatched)
+        {
+            return;
+        }
+
+        var originalLoadFile = App.prototype.loadFile;
+
+        App.prototype.loadFile = function(id, sameWindow, file, success, force)
+        {
+            if (id != null && id.substring(0, dockerHashPrefix.length) == dockerHashPrefix)
+            {
+                this.hideDialog();
+                openDockerPath(this, decodeURIComponent(id.substring(dockerHashPrefix.length)), success);
+                return;
+            }
+            else if (id != null && id.charAt(0) == 'D')
+            {
+                var dockerPath = decodeURIComponent(id.substring(1));
+
+                if (isDockerOpenablePath(dockerPath))
+                {
+                    this.hideDialog();
+                    openDockerPath(this, dockerPath, success);
+                    return;
+                }
+            }
+
+            return originalLoadFile.apply(this, arguments);
+        };
+
+        App.prototype.loadFile._dockerStoragePatched = true;
+    }
+
+    function migrateDockerRecent()
+    {
+        if (typeof isLocalStorage === 'undefined' || !isLocalStorage ||
+            typeof localStorage === 'undefined' || localStorage == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var value = localStorage.getItem('.recent');
+
+            if (value == null)
+            {
+                return;
+            }
+
+            var recent = JSON.parse(value);
+            var changed = false;
+
+            for (var i = 0; i < recent.length; i++)
+            {
+                if (recent[i] != null && recent[i].mode == dockerMode &&
+                    typeof recent[i].id === 'string' &&
+                    recent[i].id.charAt(0) == 'D' &&
+                    recent[i].id.substring(0, dockerHashPrefix.length) != dockerHashPrefix)
+                {
+                    recent[i].id = dockerHashPrefix + recent[i].id.substring(1);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                localStorage.setItem('.recent', JSON.stringify(recent));
+            }
+        }
+        catch (e)
+        {
+            // ignore
+        }
+    }
+
+    function patchMenu(ui, name, addItems, prepend)
     {
         if (ui.menus == null || ui.menus.get == null || ui.menus.put == null ||
             typeof Menu === 'undefined')
@@ -596,12 +1055,20 @@
         var oldFunct = oldMenu.funct;
         var menu = new Menu(function(popup, parent)
         {
+            if (prepend)
+            {
+                addItems(popup, parent);
+            }
+
             if (oldFunct != null)
             {
                 oldFunct.apply(oldMenu, arguments);
             }
 
-            addItems(popup, parent);
+            if (!prepend)
+            {
+                addItems(popup, parent);
+            }
         }, oldMenu.enabled);
 
         menu._dockerStoragePatched = true;
@@ -620,8 +1087,6 @@
         var style = document.createElement('style');
         style.textContent =
             '.dxDockerPanel{font-family:Helvetica,Arial,sans-serif;color:#20242a;min-width:520px}' +
-            '.dxDockerBar{display:flex;gap:8px;align-items:center;margin-bottom:10px}' +
-            '.dxDockerPath{flex:1;height:28px;border:1px solid #c9ced6;border-radius:3px;padding:0 8px;font-size:13px}' +
             '.dxDockerList{height:280px;overflow:auto;border:1px solid #d7dbe2;border-radius:4px;background:#fff}' +
             '.dxDockerRow{display:grid;grid-template-columns:24px 1fr 90px 120px;gap:8px;align-items:center;height:31px;padding:0 8px;border-bottom:1px solid #eef0f3;font-size:13px;cursor:default}' +
             '.dxDockerRow:hover,.dxDockerRow.dxSelected{background:#eef5ff}' +
@@ -639,34 +1104,45 @@
             ui.actions.addAction('openDockerServer...', function()
             {
                 showDockerDialog(ui, 'open');
-            }).label = 'Docker Server...';
+            }).label = 'Docker Files...';
 
             ui.actions.addAction('saveAsDockerServer...', function()
             {
                 showDockerDialog(ui, 'save');
-            }).label = 'Docker Server...';
+            }).label = 'Docker Files...';
         }
 
         patchMenu(ui, 'openFrom', function(menu, parent)
         {
-            menu.addSeparator(parent);
-            menu.addItem('Docker Server...', null, function()
+            menu.addItem('Docker Files...', null, function()
             {
                 showDockerDialog(ui, 'open');
             }, parent);
-        });
+            menu.addSeparator(parent);
+        }, true);
 
         var addSaveAsDocker = function(menu, parent)
         {
             menu.addSeparator(parent);
-            menu.addItem('Save As to Docker Server...', null, function()
+            menu.addItem('Save As to Docker Files...', null, function()
             {
                 showDockerDialog(ui, 'save');
             }, parent);
         };
 
+        var addSaveAsDockerFirst = function(menu, parent)
+        {
+            menu.addItem('Save As to Docker Files...', null, function()
+            {
+                showDockerDialog(ui, 'save');
+            }, parent);
+            menu.addSeparator(parent);
+        };
+
         patchMenu(ui, 'file', addSaveAsDocker);
-        patchMenu(ui, 'save', addSaveAsDocker);
+        patchMenu(ui, 'save', addSaveAsDockerFirst, true);
+        patchLoadFile();
+        migrateDockerRecent();
         patchSaveDialog();
     }
 
